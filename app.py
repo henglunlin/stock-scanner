@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, render_template, request, Response
+from flask import Flask, jsonify, render_template, request
 import yfinance as yf
 import pandas as pd
 import os
@@ -13,18 +13,9 @@ app = Flask(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SCAN_LIST_FILE = os.path.join(BASE_DIR, "TWstocklist.txt")
 
-# 掃描狀態（共享狀態）
-scan_state = {
-    "status": "idle",       # idle | scanning | done | error
-    "progress": 0,
-    "total": 0,
-    "current_symbol": "",
-    "results": [],
-    "last_scan": None,
-    "error": None,
-}
-scan_lock = threading.Lock()
-
+# 🌟 改用任務字典管理：不再有全域 scan_lock！
+# 結構會是：{ "task_123456": { status, progress, ... }, "task_123457": { ... } }
+scan_tasks = {}
 
 def load_scan_list(filepath):
     stocks = []
@@ -39,20 +30,24 @@ def load_scan_list(filepath):
     return stocks
 
 
-def run_scan(symbols, enable_kd=True, enable_gap=True):
-    """在背景執行緒執行掃描"""
-    with scan_lock:
-        scan_state["status"] = "scanning"
-        scan_state["progress"] = 0
-        scan_state["total"] = len(symbols)
-        scan_state["results"] = []
-        scan_state["error"] = None
+def run_scan(task_id, symbols, enable_kd=True, enable_gap=True):
+    """在背景執行緒執行獨立掃描（無鎖設計）"""
+    # 🌟 每個任務只改自己 task_id 底下的資料，各走各的路
+    scan_tasks[task_id] = {
+        "status": "scanning",
+        "progress": 0,
+        "total": len(symbols),
+        "current_symbol": "",
+        "results": [],
+        "last_scan": None,
+        "error": None
+    }
 
     rows = []
     for i, symbol in enumerate(symbols):
-        with scan_lock:
-            scan_state["progress"] = i + 1
-            scan_state["current_symbol"] = symbol
+        # 🌟 直接更新，不需搶鎖
+        scan_tasks[task_id]["progress"] = i + 1
+        scan_tasks[task_id]["current_symbol"] = symbol
 
         try:
             ticker = yf.Ticker(symbol)
@@ -141,12 +136,12 @@ def run_scan(symbols, enable_kd=True, enable_gap=True):
             })
 
         except Exception as e:
-            pass  # 忽略單支股票錯誤，繼續掃描
+            pass  # 忽略單支股票錯誤
 
-    with scan_lock:
-        scan_state["status"]    = "done"
-        scan_state["results"]   = rows
-        scan_state["last_scan"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 🌟 掃描完成，直接寫入對應的 task_id 中
+    scan_tasks[task_id]["status"]    = "done"
+    scan_tasks[task_id]["results"]   = rows
+    scan_tasks[task_id]["last_scan"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 # ==================== 路由 ====================
@@ -158,9 +153,8 @@ def index():
 
 @app.route("/api/scan/start", methods=["POST"])
 def start_scan():
-    with scan_lock:
-        if scan_state["status"] == "scanning":
-            return jsonify({"ok": False, "msg": "掃描中，請稍後"}), 400
+    # 🌟 每次按下按鈕，都利用當前時間（含毫秒）產生一個全域唯一的任務 ID
+    task_id = "task_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
     data = request.get_json(silent=True) or {}
     enable_kd  = data.get("enable_kd",  True)
@@ -170,37 +164,50 @@ def start_scan():
     if not symbols:
         return jsonify({"ok": False, "msg": "找不到股票清單"}), 400
 
+    # 🌟 將 task_id 傳入執行緒
     t = threading.Thread(
         target=run_scan,
-        args=(symbols, enable_kd, enable_gap),
+        args=(task_id, symbols, enable_kd, enable_gap),
         daemon=True
     )
     t.start()
-    return jsonify({"ok": True, "total": len(symbols)})
+    
+    # 🌟 回傳 task_id 給網頁，讓網頁知道接下來要查哪一個任務的進度
+    return jsonify({"ok": True, "task_id": task_id, "total": len(symbols)})
 
 
 @app.route("/api/scan/status")
 def scan_status():
-    with scan_lock:
-        return jsonify({
-            "status":         scan_state["status"],
-            "progress":       scan_state["progress"],
-            "total":          scan_state["total"],
-            "current_symbol": scan_state["current_symbol"],
-            "result_count":   len(scan_state["results"]),
-            "last_scan":      scan_state["last_scan"],
-        })
+    # 🌟 前端網頁需改為傳遞 query 參數，例如：/api/scan/status?task_id=task_2024...
+    task_id = request.args.get("task_id")
+    
+    if not task_id or task_id not in scan_tasks:
+        return jsonify({"status": "idle", "msg": "找不到該任務或尚未開始"}), 200
+
+    task = scan_tasks[task_id]
+    return jsonify({
+        "status":         task["status"],
+        "progress":       task["progress"],
+        "total":          task["total"],
+        "current_symbol": task["current_symbol"],
+        "result_count":   len(task["results"]),
+        "last_scan":      task["last_scan"],
+    })
 
 
 @app.route("/api/scan/results")
 def scan_results():
-    with scan_lock:
-        return jsonify({
-            "results":   scan_state["results"],
-            "last_scan": scan_state["last_scan"],
-        })
+    # 🌟 同樣依據任務 ID 獲取結果
+    task_id = request.args.get("task_id")
+    
+    if not task_id or task_id not in scan_tasks:
+        return jsonify({"results": [], "msg": "找不到該任務結果"}), 404
+
+    return jsonify({
+        "results":   scan_tasks[task_id]["results"],
+        "last_scan": scan_tasks[task_id]["last_scan"],
+    })
 
 
 if __name__ == "__main__":
-    # host="0.0.0.0" 讓區域網路手機也能連
     app.run(host="0.0.0.0", port=5000, debug=False)
