@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>台股掃描器</title>
+</head>
+
+<body>
+<h2>台股掃描器</h2>
+<button onclick="loadData()">重新掃描</button>
+
+<div id="content">載入中...</div>
+
+<script>
+async function loadData() {
+
+    // ✅ 顯示 loading
+    document.getElementById("content").innerHTML = "載入中...";
+
+    const res = await fetch('/api/scan');
+    const data = await res.json();
+
+    // ✅ ✅ ✅ 沒資料提示（加在這裡）
+    if (!data || data.length === 0) {
+        document.getElementById("content").innerHTML = "⚠️ 沒有符合條件的股票";
+        return;
+    }
+
+    let html = "";
+
+    const groups = {};
+
+    data.forEach(row => {
+        if (!groups[row.分組]) {
+            groups[row.分組] = [];
+        }
+        groups[row.分組].push(row);
+    });
+
+    for (let g in groups) {
+        html += `<h3>${g}</h3>`;
+        html += `<table border="1">
+            <tr>
+                <th>時間</th><th>代碼</th><th>價格</th><th>漲跌%</th>
+                <th>MA</th><th>排列</th><th>K</th><th>D</th>
+                <th>KD</th><th>跳空</th>
+            </tr>`;
+
+        groups[g].forEach(row => {
+            html += `<tr>
+                <td>${row.時間}</td>
+                <td>${row.代碼}</td>
+                <td>${row.價格}</td>
+                <td style="color:${row['漲跌%']>0?'red':'green'}">${row['漲跌%']}%</td>
+                <td>${row.MA位置}</td>
+                <td>${row.MA排列}</td>
+                <td>${row.K值}</td>
+                <td>${row.D值}</td>
+                <td>${row.KD訊號}</td>
+                <td>${row.跳空訊號}</td>
+            </tr>`;
+        });
+
+        html += "</table><br>";
+    }
+
+    document.getElementById("content").innerHTML = html;
+}
+
+// ✅ 頁面載入就跑
+loadData();
+
+// ✅ 每60秒刷新
+setInterval(loadData, 60000);
+</script>
+
+</body>
+</html>
