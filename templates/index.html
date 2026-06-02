@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8">
@@ -191,7 +191,7 @@
 <body>
 
 <header>
-  <div class="logo">台股<span>掃描</span></div>
+  <div class="logo">台股掃描<span>-告訴我你會買日月光</span></div>
   <div id="last-scan">尚未掃描</div>
 </header>
 
@@ -245,163 +245,180 @@
 <script>
 const opts = { kd: true, gap: true };
 let pollTimer = null;
+let currentTaskId = null; // 🌟 新增：用來記錄當前正在跑的任務 ID
 
-function toggleOpt(key) {
-  opts[key] = !opts[key];
-  const btn = document.getElementById('btn-' + key);
-  btn.classList.toggle('active', opts[key]);
+function toggleOpt(type) {
+  opts[type] = !opts[type];
+  document.getElementById(`btn-${type}`).classList.toggle('active', opts[type]);
 }
 
-async function startScan() {
-  const btn = document.getElementById('scan-btn');
-  btn.disabled = true;
-  btn.textContent = '掃描中…';
-  document.getElementById('progress-wrap').style.display = 'block';
-  document.getElementById('empty-state').style.display = 'none';
-  document.getElementById('cards-container').innerHTML = '';
-  resetStats();
+// 1. 發送請求給後端，並取得專屬的 task_id
+function startScan() {
+  const scanBtn = document.getElementById("scan-btn");
+  scanBtn.disabled = true; // 避免毫秒內的極速重複點擊，稍後在輪詢中會解鎖
 
-  try {
-    const r = await fetch('/api/scan/start', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ enable_kd: opts.kd, enable_gap: opts.gap })
-    });
-    const data = await r.json();
-    if (!data.ok) { alert(data.msg); resetBtn(); return; }
-    startPolling();
-  } catch(e) {
-    alert('無法連接伺服器：' + e.message);
-    resetBtn();
-  }
-}
+  // 顯示進度條
+  document.getElementById("progress-wrap").style.display = "block";
+  document.getElementById("progress-label").innerText = "正在向伺服器申請掃描任務...";
+  document.getElementById("progress-fill").style.width = "0%";
 
-function startPolling() {
-  clearInterval(pollTimer);
-  pollTimer = setInterval(pollStatus, 1500);
-}
-
-async function pollStatus() {
-  try {
-    const r = await fetch('/api/scan/status');
-    const s = await r.json();
-
-    // progress bar
-    const pct = s.total ? Math.round(s.progress / s.total * 100) : 0;
-    document.getElementById('progress-fill').style.width = pct + '%';
-    document.getElementById('progress-label').innerHTML =
-      `<span class="scanning-indicator"></span>` +
-      `${s.progress} / ${s.total}　${s.current_symbol}　已命中 ${s.result_count} 支`;
-
-    if (s.status === 'done') {
-      clearInterval(pollTimer);
-      await loadResults();
-      resetBtn();
-      document.getElementById('progress-wrap').style.display = 'none';
-      if (s.last_scan) document.getElementById('last-scan').textContent = '上次：' + s.last_scan;
+  fetch("/api/scan/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enable_kd: opts.kd, enable_gap: opts.gap })
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.ok) {
+      // 🌟 核心：拿到這一次點擊專屬的全新 Task ID！各走各的路
+      currentTaskId = data.task_id; 
+      
+      // 清除上一次的定時器，改追蹤這一次的新進度
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(pollProgress, 1000);
+      pollProgress(); // 立刻執行一次
+    } else {
+      alert(data.msg || "啟動失敗");
+      scanBtn.disabled = false;
     }
-  } catch(e) { /* ignore */ }
+  })
+  .catch(err => {
+    console.error(err);
+    alert("連線後端出錯");
+    scanBtn.disabled = false;
+  });
 }
 
-async function loadResults() {
-  const r = await fetch('/api/scan/results');
-  const data = await r.json();
-  renderCards(data.results);
+// 2. 定時輪詢進度（🌟 網址加上了 ?task_id=... 參數）
+function pollProgress() {
+  if (!currentTaskId) return;
+
+  fetch(`/api/scan/status?task_id=${currentTaskId}`)
+  .then(res => res.json())
+  .then(data => {
+    const scanBtn = document.getElementById("scan-btn");
+    
+    if (data.status === "scanning") {
+      // 🌟 即使在掃描中，我們也把按鈕恢復（允許使用者隨時再按一次，啟動另一個新任務）
+      scanBtn.disabled = false; 
+      scanBtn.innerText = "再次全新掃描";
+
+      // 更新進度條
+      const pct = data.total > 0 ? Math.round((data.progress / data.total) * 100) : 0;
+      document.getElementById("progress-fill").style.width = `${pct}%`;
+      document.getElementById("progress-label").innerHTML = 
+        `<span class="scanning-indicator"></span>正在掃描 (${data.progress}/${data.total}) - 當前: ${data.current_symbol}`;
+    } 
+    else if (data.status === "done") {
+      clearInterval(pollTimer);
+      scanBtn.disabled = false;
+      scanBtn.innerText = "開始掃描";
+      document.getElementById("progress-label").innerText = "掃描完成！";
+      document.getElementById("progress-fill").style.width = "100%";
+      if (data.last_scan) {
+        document.getElementById("last-scan").innerText = `最後掃描時間: ${data.last_scan}`;
+      }
+      // 抓取最終結果
+      fetchResults();
+    }
+  })
+  .catch(err => console.error("輪詢狀態出錯:", err));
 }
 
-function renderCards(rows) {
-  const container = document.getElementById('cards-container');
-  container.innerHTML = '';
+// 3. 取得這一個任務的最終股票結果（🌟 網址加上了 ?task_id=... 參數）
+function fetchResults() {
+  if (!currentTaskId) return;
 
-  if (!rows.length) {
-    document.getElementById('empty-state').style.display = 'block';
-    document.getElementById('empty-state').innerHTML =
-      '<div class="empty-icon">🔍</div><div class="empty-msg">本輪沒有符合條件的股票</div>';
-    updateStats(rows);
+  fetch(`/api/scan/results?task_id=${currentTaskId}`)
+  .then(res => res.json())
+  .then(data => {
+    renderCards(data.results || []);
+  })
+  .catch(err => console.error("取得結果出錯:", err));
+}
+
+// 4. 渲染卡片與數據統計
+function renderCards(results) {
+  const container = document.getElementById("cards-container");
+  const emptyState = document.getElementById("empty-state");
+  
+  // 統計變數
+  let goldenCount = 0;
+  let gapCount = 0;
+  let bullCount = 0;
+
+  container.innerHTML = "";
+
+  if (results.length === 0) {
+    emptyState.style.display = "block";
+    document.getElementById("stat-hits").innerText = "0";
+    document.getElementById("stat-golden").innerText = "0";
+    document.getElementById("stat-gap").innerText = "0";
+    document.getElementById("stat-bull").innerText = "0";
     return;
   }
 
-  updateStats(rows);
+  emptyState.style.display = "none";
 
-  rows.forEach(row => {
-    const hasGolden = !!row['KD訊號'];
-    const hasGap    = !!row['跳空訊號'];
-    const hasBoth   = hasGolden && hasGap;
-    let cls = '';
-    if (hasBoth)        cls = 'has-both';
-    else if (hasGolden) cls = 'has-golden';
-    else if (hasGap)    cls = 'has-gap';
+  results.forEach(item => {
+    // 統計計算
+    if (item["KD訊號"] && item["KD訊號"].includes("黃金交叉")) goldenCount++;
+    if (item["跳空訊號"] === "跳空") gapCount++;
+    if (item["MA排列"] === "多頭") bullCount++;
 
-    const chg = row['漲跌%'];
-    const chgCls = chg > 0 ? 'bull' : chg < 0 ? 'bear' : '';
-    const chgSign = chg > 0 ? '+' : '';
+    // 判斷左側邊框顏色樣式
+    let borderClass = "";
+    const hasKD = !!item["KD訊號"];
+    const hasGap = item["跳空訊號"] === "跳空";
+    if (hasKD && hasGap) borderClass = "has-both";
+    else if (hasKD) borderClass = "has-golden";
+    else if (hasGap) borderClass = "has-gap";
 
-    const kVal = row['K值'];
-    const kCls = kVal >= 74 ? 'bull' : kVal >= 50 ? 'warn' : 'bear';
-    const maTrendCls = row['MA排列'] === '多頭' ? 'bull' : row['MA排列'] === '空頭' ? 'bear' : 'warn';
+    const changeClass = item["漲跌%"] >= 0 ? "bull" : "bear";
+    const changeSign = item["漲跌%"] >= 0 ? "+" : "";
 
-    // signal tags
-    let tagsHtml = '';
-    if (row['KD訊號'] === '黃金交叉')      tagsHtml += `<span class="signal-tag tag-golden">⭐ 黃金交叉</span>`;
-    if (row['KD訊號'] === '即將黃金交叉')   tagsHtml += `<span class="signal-tag tag-near">🔔 即將黃金交叉</span>`;
-    if (row['跳空訊號'])                   tagsHtml += `<span class="signal-tag tag-gap">🚀 跳空</span>`;
-
-    const card = document.createElement('div');
-    card.className = `result-card ${cls}`;
+    const card = document.createElement("div");
+    card.className = `result-card ${borderClass}`;
     card.innerHTML = `
       <div class="card-top">
-        <div>
-          <div class="symbol">${row['代碼']}</div>
-        </div>
+        <div class="symbol">${item["代碼"]}</div>
         <div class="price-wrap">
-          <div class="price ${chgCls}">${row['價格'].toFixed(2)}</div>
-          <div class="change ${chgCls}">${chgSign}${chg.toFixed(2)}%</div>
+          <div class="price ${changeClass}">${item["價格"]}</div>
+          <div class="change ${changeClass}">${changeSign}${item["漲跌%"]}%</div>
         </div>
       </div>
       <div class="card-mid">
         <div class="info-cell">
-          <div class="info-lbl">MA位置</div>
-          <div class="info-val">${row['MA位置']}</div>
+          <div class="info-lbl">MA 位置</div>
+          <div class="info-val">${item["MA位置"]}</div>
         </div>
         <div class="info-cell">
-          <div class="info-lbl">MA排列</div>
-          <div class="info-val ${maTrendCls}">${row['MA排列']}</div>
+          <div class="info-lbl">MA 排列</div>
+          <div class="info-val ${item["MA排列"] === '多頭' ? 'bull' : item["MA排列"] === '空頭' ? 'bear' : ''}">${item["MA排列"]}</div>
         </div>
         <div class="info-cell">
-          <div class="info-lbl">K值</div>
-          <div class="info-val ${kCls}">${row['K值'].toFixed(1)}</div>
+          <div class="info-lbl">K 值</div>
+          <div class="info-val">${item["K值"]}</div>
         </div>
         <div class="info-cell">
-          <div class="info-lbl">D值</div>
-          <div class="info-val">${row['D值'].toFixed(1)}</div>
+          <div class="info-lbl">D 值</div>
+          <div class="info-val">${item["D值"]}</div>
         </div>
       </div>
-      <div class="card-signals">${tagsHtml}</div>
+      <div class="card-signals">
+        ${item["KD訊號"] === "黃金交叉" ? '<span class="signal-tag tag-golden">👑 黃金交叉</span>' : ''}
+        ${item["KD訊號"] === "即將黃金交叉" ? '<span class="signal-tag tag-near">⏳ 即將黃金交叉</span>' : ''}
+        ${item["跳空訊號"] === "跳空" ? '<span class="signal-tag tag-gap">🚀 跳空缺口</span>' : ''}
+      </div>
     `;
     container.appendChild(card);
   });
-}
 
-function updateStats(rows) {
-  const golden = rows.filter(r => r['KD訊號'] === '黃金交叉').length;
-  const gap    = rows.filter(r => r['跳空訊號']).length;
-  const bull   = rows.filter(r => r['MA排列'] === '多頭').length;
-  document.getElementById('stat-hits').textContent   = rows.length;
-  document.getElementById('stat-golden').textContent = golden;
-  document.getElementById('stat-gap').textContent    = gap;
-  document.getElementById('stat-bull').textContent   = bull;
-}
-
-function resetStats() {
-  ['stat-hits','stat-golden','stat-gap','stat-bull'].forEach(id => {
-    document.getElementById(id).textContent = '—';
-  });
-}
-
-function resetBtn() {
-  const btn = document.getElementById('scan-btn');
-  btn.disabled = false;
-  btn.textContent = '開始掃描';
+  // 更新統計看板
+  document.getElementById("stat-hits").innerText = results.length;
+  document.getElementById("stat-golden").innerText = goldenCount;
+  document.getElementById("stat-gap").innerText = gapCount;
+  document.getElementById("stat-bull").innerText = bullCount;
 }
 </script>
 </body>
