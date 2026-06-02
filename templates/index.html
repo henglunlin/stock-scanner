@@ -1,78 +1,408 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-TW">
 <head>
-<meta charset="utf-8">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>台股掃描器</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap');
+
+  :root {
+    --bg:        #0a0e1a;
+    --surface:   #111827;
+    --card:      #1a2235;
+    --border:    #243047;
+    --accent:    #00d4ff;
+    --bull:      #ff4d6d;
+    --bear:      #00e676;
+    --gold:      #ffd700;
+    --warn:      #ffb300;
+    --text:      #e2e8f0;
+    --muted:     #64748b;
+    --radius:    12px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Noto Sans TC', sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+  }
+
+  /* ── Header ── */
+  header {
+    position: sticky; top: 0; z-index: 100;
+    background: linear-gradient(180deg, #0a0e1a 80%, transparent);
+    padding: 16px 16px 8px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .logo {
+    font-size: 18px; font-weight: 700; letter-spacing: 1px;
+    color: var(--accent);
+    text-shadow: 0 0 20px rgba(0,212,255,.4);
+  }
+  .logo span { color: var(--bull); }
+  #last-scan { font-size: 11px; color: var(--muted); }
+
+  /* ── Controls ── */
+  .controls {
+    padding: 12px 16px;
+    display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+  }
+  .toggle-group { display: flex; gap: 8px; }
+  .toggle-btn {
+    display: flex; align-items: center; gap: 6px;
+    padding: 7px 14px; border-radius: 20px; border: 1.5px solid var(--border);
+    background: var(--card); color: var(--muted); font-size: 13px;
+    cursor: pointer; transition: all .2s; font-family: inherit;
+  }
+  .toggle-btn.active {
+    border-color: var(--accent); color: var(--accent);
+    background: rgba(0,212,255,.08);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .toggle-btn.active .dot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+
+  .scan-btn {
+    margin-left: auto;
+    padding: 10px 24px; border-radius: 24px; border: none;
+    background: linear-gradient(135deg, #00d4ff, #0090c8);
+    color: #000; font-weight: 700; font-size: 14px;
+    cursor: pointer; transition: all .2s; font-family: inherit;
+    white-space: nowrap;
+  }
+  .scan-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 20px rgba(0,212,255,.4); }
+  .scan-btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+
+  /* ── Progress ── */
+  #progress-wrap {
+    padding: 0 16px 12px; display: none;
+  }
+  .progress-bar-bg {
+    height: 4px; background: var(--border); border-radius: 2px; overflow: hidden;
+  }
+  .progress-bar-fill {
+    height: 100%; background: linear-gradient(90deg, var(--accent), #0090c8);
+    border-radius: 2px; transition: width .3s; width: 0%;
+  }
+  .progress-label { font-size: 11px; color: var(--muted); margin-top: 5px; }
+
+  /* ── Stats strip ── */
+  .stats-strip {
+    display: flex; gap: 0; padding: 0 16px 14px;
+  }
+  .stat-box {
+    flex: 1; background: var(--card); border: 1px solid var(--border);
+    padding: 10px 12px; text-align: center;
+  }
+  .stat-box:first-child { border-radius: var(--radius) 0 0 var(--radius); }
+  .stat-box:last-child  { border-radius: 0 var(--radius) var(--radius) 0; }
+  .stat-box + .stat-box { border-left: none; }
+  .stat-val { font-family: 'JetBrains Mono', monospace; font-size: 20px; font-weight: 600; color: var(--accent); }
+  .stat-lbl { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+  /* ── Results table ── */
+  #results-section { padding: 0 16px 80px; }
+  .section-title {
+    font-size: 13px; color: var(--muted); letter-spacing: 1px; text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+
+  /* Card per result */
+  .result-card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px; margin-bottom: 10px;
+    position: relative; overflow: hidden;
+    animation: fadeIn .3s ease;
+  }
+  @keyframes fadeIn { from { opacity:0; transform: translateY(8px); } to { opacity:1; transform:none; } }
+
+  .result-card::before {
+    content: ''; position: absolute; left: 0; top: 0; bottom: 0;
+    width: 3px; background: var(--accent);
+  }
+  .result-card.has-golden::before { background: var(--gold); }
+  .result-card.has-gap::before    { background: var(--bull); }
+  .result-card.has-both::before   {
+    background: linear-gradient(180deg, var(--gold) 50%, var(--bull) 50%);
+  }
+
+  .card-top {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    margin-bottom: 10px;
+  }
+  .symbol {
+    font-family: 'JetBrains Mono', monospace; font-size: 16px; font-weight: 600;
+    color: #fff;
+  }
+  .price-wrap { text-align: right; }
+  .price {
+    font-family: 'JetBrains Mono', monospace; font-size: 18px; font-weight: 600;
+  }
+  .change {
+    font-family: 'JetBrains Mono', monospace; font-size: 12px;
+    margin-top: 1px;
+  }
+  .bull { color: var(--bull); }
+  .bear { color: var(--bear); }
+
+  .card-mid {
+    display: grid; grid-template-columns: repeat(4,1fr); gap: 8px;
+    margin-bottom: 10px;
+  }
+  .info-cell { }
+  .info-lbl { font-size: 10px; color: var(--muted); margin-bottom: 2px; }
+  .info-val {
+    font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--text);
+  }
+  .info-val.bull { color: var(--bull); }
+  .info-val.bear { color: var(--bear); }
+  .info-val.gold { color: var(--gold); }
+  .info-val.warn { color: var(--warn); }
+
+  .card-signals { display: flex; gap: 6px; flex-wrap: wrap; }
+  .signal-tag {
+    padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 500;
+  }
+  .tag-golden { background: rgba(255,215,0,.15); color: var(--gold); border: 1px solid rgba(255,215,0,.3); }
+  .tag-near   { background: rgba(255,179,0,.12); color: var(--warn); border: 1px solid rgba(255,179,0,.3); }
+  .tag-gap    { background: rgba(255,77,109,.12); color: var(--bull); border: 1px solid rgba(255,77,109,.3); }
+
+  /* ── Empty / scanning state ── */
+  .empty-state {
+    text-align: center; padding: 60px 20px; color: var(--muted);
+  }
+  .empty-icon { font-size: 48px; margin-bottom: 12px; }
+  .empty-msg  { font-size: 15px; }
+  .empty-sub  { font-size: 13px; margin-top: 6px; }
+
+  /* ── Scanning animation ── */
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.4; } }
+  .scanning-indicator {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent); margin-right: 6px;
+    animation: pulse 1s infinite;
+  }
+</style>
 </head>
-
 <body>
-<h2>台股掃描器</h2>
-<button onclick="loadData()">重新掃描</button>
 
-<div id="content">載入中...</div>
+<header>
+  <div class="logo">台股<span>掃描</span></div>
+  <div id="last-scan">尚未掃描</div>
+</header>
+
+<div class="controls">
+  <div class="toggle-group">
+    <button class="toggle-btn active" id="btn-kd" onclick="toggleOpt('kd')">
+      <span class="dot"></span>KD訊號
+    </button>
+    <button class="toggle-btn active" id="btn-gap" onclick="toggleOpt('gap')">
+      <span class="dot"></span>跳空
+    </button>
+  </div>
+  <button class="scan-btn" id="scan-btn" onclick="startScan()">開始掃描</button>
+</div>
+
+<div id="progress-wrap">
+  <div class="progress-bar-bg">
+    <div class="progress-bar-fill" id="progress-fill"></div>
+  </div>
+  <div class="progress-label" id="progress-label">準備中…</div>
+</div>
+
+<div class="stats-strip">
+  <div class="stat-box">
+    <div class="stat-val" id="stat-hits">—</div>
+    <div class="stat-lbl">命中</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-val" id="stat-golden">—</div>
+    <div class="stat-lbl">黃金交叉</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-val" id="stat-gap">—</div>
+    <div class="stat-lbl">跳空</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-val" id="stat-bull">—</div>
+    <div class="stat-lbl">多頭排列</div>
+  </div>
+</div>
+
+<div id="results-section">
+  <div class="empty-state" id="empty-state">
+    <div class="empty-icon">📊</div>
+    <div class="empty-msg">點擊「開始掃描」</div>
+    <div class="empty-sub">將掃描全部台股清單</div>
+  </div>
+  <div id="cards-container"></div>
+</div>
 
 <script>
-async function loadData() {
+const opts = { kd: true, gap: true };
+let pollTimer = null;
 
-    // ✅ 顯示 loading
-    document.getElementById("content").innerHTML = "載入中...";
-
-    const res = await fetch('/api/scan');
-    const data = await res.json();
-
-    // ✅ ✅ ✅ 沒資料提示（加在這裡）
-    if (!data || data.length === 0) {
-        document.getElementById("content").innerHTML = "⚠️ 沒有符合條件的股票";
-        return;
-    }
-
-    let html = "";
-
-    const groups = {};
-
-    data.forEach(row => {
-        if (!groups[row.分組]) {
-            groups[row.分組] = [];
-        }
-        groups[row.分組].push(row);
-    });
-
-    for (let g in groups) {
-        html += `<h3>${g}</h3>`;
-        html += `<table border="1">
-            <tr>
-                <th>時間</th><th>代碼</th><th>價格</th><th>漲跌%</th>
-                <th>MA</th><th>排列</th><th>K</th><th>D</th>
-                <th>KD</th><th>跳空</th>
-            </tr>`;
-
-        groups[g].forEach(row => {
-            html += `<tr>
-                <td>${row.時間}</td>
-                <td>${row.代碼}</td>
-                <td>${row.價格}</td>
-                <td style="color:${row['漲跌%']>0?'red':'green'}">${row['漲跌%']}%</td>
-                <td>${row.MA位置}</td>
-                <td>${row.MA排列}</td>
-                <td>${row.K值}</td>
-                <td>${row.D值}</td>
-                <td>${row.KD訊號}</td>
-                <td>${row.跳空訊號}</td>
-            </tr>`;
-        });
-
-        html += "</table><br>";
-    }
-
-    document.getElementById("content").innerHTML = html;
+function toggleOpt(key) {
+  opts[key] = !opts[key];
+  const btn = document.getElementById('btn-' + key);
+  btn.classList.toggle('active', opts[key]);
 }
 
-// ✅ 頁面載入就跑
-loadData();
+async function startScan() {
+  const btn = document.getElementById('scan-btn');
+  btn.disabled = true;
+  btn.textContent = '掃描中…';
+  document.getElementById('progress-wrap').style.display = 'block';
+  document.getElementById('empty-state').style.display = 'none';
+  document.getElementById('cards-container').innerHTML = '';
+  resetStats();
 
-// ✅ 每60秒刷新
-setInterval(loadData, 60000);
+  try {
+    const r = await fetch('/api/scan/start', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ enable_kd: opts.kd, enable_gap: opts.gap })
+    });
+    const data = await r.json();
+    if (!data.ok) { alert(data.msg); resetBtn(); return; }
+    startPolling();
+  } catch(e) {
+    alert('無法連接伺服器：' + e.message);
+    resetBtn();
+  }
+}
+
+function startPolling() {
+  clearInterval(pollTimer);
+  pollTimer = setInterval(pollStatus, 1500);
+}
+
+async function pollStatus() {
+  try {
+    const r = await fetch('/api/scan/status');
+    const s = await r.json();
+
+    // progress bar
+    const pct = s.total ? Math.round(s.progress / s.total * 100) : 0;
+    document.getElementById('progress-fill').style.width = pct + '%';
+    document.getElementById('progress-label').innerHTML =
+      `<span class="scanning-indicator"></span>` +
+      `${s.progress} / ${s.total}　${s.current_symbol}　已命中 ${s.result_count} 支`;
+
+    if (s.status === 'done') {
+      clearInterval(pollTimer);
+      await loadResults();
+      resetBtn();
+      document.getElementById('progress-wrap').style.display = 'none';
+      if (s.last_scan) document.getElementById('last-scan').textContent = '上次：' + s.last_scan;
+    }
+  } catch(e) { /* ignore */ }
+}
+
+async function loadResults() {
+  const r = await fetch('/api/scan/results');
+  const data = await r.json();
+  renderCards(data.results);
+}
+
+function renderCards(rows) {
+  const container = document.getElementById('cards-container');
+  container.innerHTML = '';
+
+  if (!rows.length) {
+    document.getElementById('empty-state').style.display = 'block';
+    document.getElementById('empty-state').innerHTML =
+      '<div class="empty-icon">🔍</div><div class="empty-msg">本輪沒有符合條件的股票</div>';
+    updateStats(rows);
+    return;
+  }
+
+  updateStats(rows);
+
+  rows.forEach(row => {
+    const hasGolden = !!row['KD訊號'];
+    const hasGap    = !!row['跳空訊號'];
+    const hasBoth   = hasGolden && hasGap;
+    let cls = '';
+    if (hasBoth)        cls = 'has-both';
+    else if (hasGolden) cls = 'has-golden';
+    else if (hasGap)    cls = 'has-gap';
+
+    const chg = row['漲跌%'];
+    const chgCls = chg > 0 ? 'bull' : chg < 0 ? 'bear' : '';
+    const chgSign = chg > 0 ? '+' : '';
+
+    const kVal = row['K值'];
+    const kCls = kVal >= 74 ? 'bull' : kVal >= 50 ? 'warn' : 'bear';
+    const maTrendCls = row['MA排列'] === '多頭' ? 'bull' : row['MA排列'] === '空頭' ? 'bear' : 'warn';
+
+    // signal tags
+    let tagsHtml = '';
+    if (row['KD訊號'] === '黃金交叉')      tagsHtml += `<span class="signal-tag tag-golden">⭐ 黃金交叉</span>`;
+    if (row['KD訊號'] === '即將黃金交叉')   tagsHtml += `<span class="signal-tag tag-near">🔔 即將黃金交叉</span>`;
+    if (row['跳空訊號'])                   tagsHtml += `<span class="signal-tag tag-gap">🚀 跳空</span>`;
+
+    const card = document.createElement('div');
+    card.className = `result-card ${cls}`;
+    card.innerHTML = `
+      <div class="card-top">
+        <div>
+          <div class="symbol">${row['代碼']}</div>
+        </div>
+        <div class="price-wrap">
+          <div class="price ${chgCls}">${row['價格'].toFixed(2)}</div>
+          <div class="change ${chgCls}">${chgSign}${chg.toFixed(2)}%</div>
+        </div>
+      </div>
+      <div class="card-mid">
+        <div class="info-cell">
+          <div class="info-lbl">MA位置</div>
+          <div class="info-val">${row['MA位置']}</div>
+        </div>
+        <div class="info-cell">
+          <div class="info-lbl">MA排列</div>
+          <div class="info-val ${maTrendCls}">${row['MA排列']}</div>
+        </div>
+        <div class="info-cell">
+          <div class="info-lbl">K值</div>
+          <div class="info-val ${kCls}">${row['K值'].toFixed(1)}</div>
+        </div>
+        <div class="info-cell">
+          <div class="info-lbl">D值</div>
+          <div class="info-val">${row['D值'].toFixed(1)}</div>
+        </div>
+      </div>
+      <div class="card-signals">${tagsHtml}</div>
+    `;
+    container.appendChild(card);
+  });
+}
+
+function updateStats(rows) {
+  const golden = rows.filter(r => r['KD訊號'] === '黃金交叉').length;
+  const gap    = rows.filter(r => r['跳空訊號']).length;
+  const bull   = rows.filter(r => r['MA排列'] === '多頭').length;
+  document.getElementById('stat-hits').textContent   = rows.length;
+  document.getElementById('stat-golden').textContent = golden;
+  document.getElementById('stat-gap').textContent    = gap;
+  document.getElementById('stat-bull').textContent   = bull;
+}
+
+function resetStats() {
+  ['stat-hits','stat-golden','stat-gap','stat-bull'].forEach(id => {
+    document.getElementById(id).textContent = '—';
+  });
+}
+
+function resetBtn() {
+  const btn = document.getElementById('scan-btn');
+  btn.disabled = false;
+  btn.textContent = '開始掃描';
+}
 </script>
-
 </body>
 </html>
